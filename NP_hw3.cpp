@@ -12,10 +12,16 @@ using namespace std;
 
 BOOL CALLBACK MainDlgProc(HWND, UINT, WPARAM, LPARAM);
 int EditPrintf (HWND, TCHAR *, ...);
+void parseString(char* string, int* nbHost);
 //=================================================================
 //	Global Variables
 //=================================================================
 list<SOCKET> Socks;
+
+char* hosts[5];
+char* ports[5];
+char* files[5];
+FILE* filefps[5];
 
 struct {
 	char* ext;
@@ -35,10 +41,24 @@ struct {
 	{ 0, 0 }
 };
 
+typedef enum {
+	GIF,
+	JPG,
+	JPEG,
+	PNG,
+	ZIP,
+	GZ,
+	TAR,
+	HTM,
+	HTML,
+	EXE,
+	CGI,
+	NONE
+} FileType;
+
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
 	LPSTR lpCmdLine, int nCmdShow)
 {
-	
 	return DialogBox(hInstance, MAKEINTRESOURCE(ID_MAIN), NULL, MainDlgProc);
 }
 
@@ -57,8 +77,13 @@ BOOL CALLBACK MainDlgProc(HWND hwnd, UINT Message, WPARAM wParam, LPARAM lParam)
 	FILE* fp;
 	int n;
 
-	char* filename;
+	FileType filetype = NONE;
+	char* filename = NULL;
+	string s_filename = "form_get.html";
 	char* get;
+	int fnlen;
+	int len;
+	int nbHost = 0;
 
 	switch(Message) 
 	{
@@ -136,16 +161,15 @@ BOOL CALLBACK MainDlgProc(HWND hwnd, UINT Message, WPARAM wParam, LPARAM lParam)
 					break;
 				case FD_READ:
 				//Write your code for read event here.
+					EditPrintf(hwndEdit, TEXT("=== FD_READ ===\r\n"));
 					//read request from browser
-					n = recv(ssock, recv_buf, BUFSIZE-1, 0);
+					n = recv(ssock, recv_buf, BUFSIZE - 1, 0);
 					if (n <= 0)
 					{
-						EditPrintf(hwndEdit, TEXT("=== Error: recv from browser error ===\r\n"));
-						WSACleanup();
 						return FALSE;
 					}
 					recv_buf[n] = '\0';
-					for (size_t i = 0; i < n; i++)
+					for (int i = 0; i < n; i++)
 					{
 						if (recv_buf[i] == '\r' || recv_buf[i] == '\n')
 						{
@@ -156,12 +180,11 @@ BOOL CALLBACK MainDlgProc(HWND hwnd, UINT Message, WPARAM wParam, LPARAM lParam)
 					//check whether the request is get
 					if (strncmp(recv_buf, "GET ", 4) != 0 && strncmp(recv_buf, "get ", 4) != 0)
 					{
-						EditPrintf(hwndEdit, TEXT("=== Error: only accept get error ===\r\n"));
-						WSACleanup();
 						return FALSE;
 					}
 
-					for (size_t i = 4; i < n; i++)
+					//remove the last of GET /xxx.html?xxx
+					for (int i = 4; i < n; i++)
 					{
 						if (recv_buf[i] == ' ')
 						{
@@ -170,20 +193,65 @@ BOOL CALLBACK MainDlgProc(HWND hwnd, UINT Message, WPARAM wParam, LPARAM lParam)
 						}
 					}
 
+					//separate filename and get information
 					filename = strtok(&recv_buf[5], "?");
 					get = strtok(NULL, "?");
+					EditPrintf(hwndEdit, TEXT("=== filename:%s ===\r\n"), filename);
 
-					//send(ssock, recv_buf, n, 0);
+					//avoid .. command
+					for (size_t i = 1; i < strlen(filename); i++)
+					{
+						if (filename[i - 1] == '.' && filename[i] == '.')
+						{
+							return false;
+						}
+					}
+
+					//check file type
+					fnlen = strlen(filename);
+					for (int i = 0; extensions[i].ext != 0; i++)
+					{
+						len = strlen(extensions[i].ext);
+						if (strncmp(&filename[fnlen - len], extensions[i].ext, len) == 0)
+						{
+							filetype = static_cast<FileType>(i);
+							break;
+						}
+					}
+
+					switch (filetype)
+					{
+					case GIF:
+					case JPG:
+					case PNG:
+					case ZIP:
+					case GZ:
+					case TAR:
+					case HTM:
+					case HTML:
+						fp = fopen(filename, "r");
+						while ((n = fread(msg_buf, sizeof(char), BUFSIZE, fp)) > 0) {
+							send(ssock, msg_buf, n, 0);
+						}
+						closesocket(ssock);
+						break;
+					case EXE:
+						break;
+					case CGI:
+						EditPrintf(hwndEdit, TEXT("=== get:%s ===\r\n"), get);
+						parseString(get, &nbHost);
+						EditPrintf(hwndEdit, TEXT("=== nbHost:%d ===\r\n"), nbHost);
+						closesocket(ssock);
+						break;
+					case NONE:
+						EditPrintf(hwndEdit, TEXT("=== FileType NONE ===\r\n"));
+						break;
+					default:
+						break;
+					}
 					break;
 				case FD_WRITE:
 				//Write your code for write event here
-					fp = fopen("server_file/form_get.html", "r");
-					while ((n = fread(msg_buf, sizeof(char), BUFSIZE, fp)) > 0) {
-						send(ssock, msg_buf, n, 0);
-					}
-					
-					/*send(ssock, TEST, strlen(TEST), 0);
-					send(ssock, HELLO, strlen(HELLO), 0);*/
 					break;
 				case FD_CLOSE:
 					break;
@@ -212,4 +280,32 @@ int EditPrintf (HWND hwndEdit, TCHAR * szFormat, ...)
      SendMessage (hwndEdit, EM_REPLACESEL, FALSE, (LPARAM) szBuffer) ;
      SendMessage (hwndEdit, EM_SCROLLCARET, 0, 0) ;
 	 return SendMessage(hwndEdit, EM_GETLINECOUNT, 0, 0); 
+}
+
+void parseString(char* string, int* nbHost)
+{
+	char* pair = NULL;
+	char* key;
+	int count = 0;
+	pair = strtok(string, "&");
+	while (pair != NULL)
+	{
+		switch (count % 3)
+		{
+		case 0:
+			hosts[count / 3] = (pair + 3);
+			if (strlen(pair + 3) > 0) (*nbHost)++;
+			break;
+		case 1:
+			ports[count / 3] = (pair + 3);
+			break;
+		case 2:
+			files[count / 3] = (pair + 3);
+			break;
+		default:
+			break;
+		}
+		++count;
+		pair = strtok(NULL, "&");
+	}
 }
