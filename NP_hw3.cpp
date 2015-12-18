@@ -11,9 +11,6 @@ using namespace std;
 #define WM_SOCKET_NOTIFY (WM_USER + 1)
 
 #define WM_SOCKET_CLIENT (WM_USER + 2)
-#define FD_Connecting 0
-#define FD_Reading	  1
-#define FD_Writing    2
 
 #define HEAD "<html>\r\n<head>\r\n<meta http-equiv=\"Content-Type\" content=\"text/html; charset=big5\" />\r\n<title>Network Programming Homework 3</title>\r\n</head>\r\n"
 #define BODY "<body bgcolor=#336699>\r\n"
@@ -28,7 +25,7 @@ using namespace std;
 BOOL CALLBACK MainDlgProc(HWND, UINT, WPARAM, LPARAM);
 int EditPrintf(HWND, TCHAR *, ...);
 void parseString(char* string, int* nbHost);
-int sendMsg(const SOCKET sock, char* string);
+int sendMsg(const SOCKET sock, char* string, int index);
 int readline(FILE* fp, char *ptr, int maxlen);
 //=================================================================
 //	Global Variables
@@ -39,9 +36,11 @@ char* hosts[5];
 char* ports[5];
 char* files[5];
 FILE* filefps[5];
-int status = FD_Connecting;
+int nbHost = 0;
+SOCKET CSocks[5] = { 0 };
 
-const char* mlist[5] = {
+const char* mlist[5] =
+{
 	"m0",
 	"m1",
 	"m2",
@@ -49,10 +48,12 @@ const char* mlist[5] = {
 	"m4"
 };
 
-struct {
+struct
+{
 	char* ext;
 	char* filetype;
-} extensions[] = {
+} extensions[] =
+{
 	{ "gif", "image/gif" },
 	{ "jpg", "image/jpeg" },
 	{ "jpeg", "image/jpeg" },
@@ -109,11 +110,12 @@ BOOL CALLBACK MainDlgProc(HWND hwnd, UINT Message, WPARAM wParam, LPARAM lParam)
 	char* get;
 	int fnlen;
 	int len;
-	int nbHost = 0;
 
 	WSADATA wsaCData;
-	static SOCKET csock;
+	SOCKET csock;
+	int count;
 	static struct sockaddr_in ca;
+	static int conn;
 
 	switch (Message)
 	{
@@ -294,30 +296,33 @@ BOOL CALLBACK MainDlgProc(HWND hwnd, UINT Message, WPARAM wParam, LPARAM lParam)
 				WSAStartup(MAKEWORD(2, 0), &wsaCData);
 
 				//create client socket
-				csock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+				for (int i = 0; i < nbHost; i++)
+				{
+					csock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+					if (csock == INVALID_SOCKET) {
+						EditPrintf(hwndEdit, TEXT("=== Error: create socket error ===\r\n"));
+						WSACleanup();
+						return TRUE;
+					}
 
-				if (msock == INVALID_SOCKET) {
-					EditPrintf(hwndEdit, TEXT("=== Error: create socket error ===\r\n"));
-					WSACleanup();
-					return TRUE;
+					err = WSAAsyncSelect(csock, hwnd, WM_SOCKET_CLIENT, FD_CLOSE | FD_READ | FD_WRITE);
+
+					if (err == SOCKET_ERROR) {
+						EditPrintf(hwndEdit, TEXT("=== Error: select error ===\r\n"));
+						closesocket(msock);
+						WSACleanup();
+						return TRUE;
+					}
+
+					//fill the address info about server
+					ca.sin_family = AF_INET;
+					ca.sin_port = htons(atoi(ports[i]));
+					ca.sin_addr.s_addr = inet_addr(hosts[i]);
+
+					connect(csock, (LPSOCKADDR)&ca, sizeof(ca));
+					CSocks[i] = csock;
 				}
-
-				err = WSAAsyncSelect(csock, hwnd, WM_SOCKET_CLIENT, FD_CLOSE | FD_READ | FD_WRITE);
-
-				if (err == SOCKET_ERROR) {
-					EditPrintf(hwndEdit, TEXT("=== Error: select error ===\r\n"));
-					closesocket(msock);
-					WSACleanup();
-					return TRUE;
-				}
-
-				//fill the address info about server
-				ca.sin_family = AF_INET;
-				ca.sin_port = htons(atoi(ports[0]));
-				ca.sin_addr.s_addr = inet_addr(hosts[0]);
-
-				connect(csock, (LPSOCKADDR)&ca, sizeof(ca));
-				status = FD_Reading;
+				conn = nbHost;
 				break;
 			case NONE:
 				EditPrintf(hwndEdit, TEXT("=== FileType NONE ===\r\n"));
@@ -339,54 +344,56 @@ BOOL CALLBACK MainDlgProc(HWND hwnd, UINT Message, WPARAM wParam, LPARAM lParam)
 		switch (WSAGETSELECTEVENT(lParam))
 		{
 		case FD_READ:
-			EditPrintf(hwndEdit, TEXT("=== CLIENT FD_READ %d ===\r\n"), status);
-			if (status == FD_Reading)
-			{
-				n = recv(csock, recv_buf, BUFSIZE - 1, 0);
-				recv_buf[n - 1] = '\0';
+			EditPrintf(hwndEdit, TEXT("=== CLIENT FD_READ ===\r\n"));
+
+			count = 0;
+			for (int i = 0; i < nbHost; i++) {
+				n = recv(CSocks[i], recv_buf, BUFSIZE - 1, 0);
 				if (n > 0)
 				{
+					recv_buf[n - 1] = '\0';
 					EditPrintf(hwndEdit, TEXT("=== receive from server: %s n: %d ===\r\n"), recv_buf, n);
-					if (sendMsg(ssock, recv_buf))
+					if (sendMsg(ssock, recv_buf, count))
 					{
-						len = readline(filefps[0], command_buf, sizeof(command_buf));
+						len = readline(filefps[count], command_buf, sizeof(command_buf));
 						command_buf[len - 1] = 13;
 						command_buf[len] = 10;
 						command_buf[len + 1] = '\0';
-						n = send(csock, command_buf, len + 1, 0);
+						n = send(CSocks[i], command_buf, len + 1, 0);
 						if (n > 0)
 						{
 							command_buf[len - 1] = '\0';
-							sprintf(msg_buf, SCRIPT_COMMAND, mlist[0], "%", command_buf);
+							sprintf(msg_buf, SCRIPT_COMMAND, mlist[count], "%", command_buf);
 							EditPrintf(hwndEdit, TEXT("=== command: %s ===\r\n"), msg_buf);
 							send(ssock, msg_buf, strlen(msg_buf), 0);
+							memset(msg_buf, 0, BUFSIZE);
 						}
-						//status = FD_Writing;
+						memset(command_buf, 0, BUFSIZE);
 					}
 				}
-
+				count++;
 			}
+
 			break;
 		case FD_WRITE:
 			EditPrintf(hwndEdit, TEXT("=== CLIENT FD_WRITE ===\r\n"));
-			if (status == FD_Writing)
-			{
-
-				if (n > 0)
-				{
-					status = FD_Reading;
-				}
-			}
 			break;
 		case FD_CLOSE:
 			EditPrintf(hwndEdit, TEXT("=== CLIENT FD_CLOSE ===\r\n"));
-			closesocket(csock);
+			if (--conn == 0)
+			{
+				for (int i = 0; i < nbHost; i++)
+				{
+					fclose(filefps[i]);
+				}
+				nbHost = 0;
+				closesocket(ssock);
+				WSACleanup();
+			}
 			break;
 		}
 	default:
 		return FALSE;
-
-
 	};
 
 	return TRUE;
@@ -435,7 +442,7 @@ void parseString(char* string, int* nbHost)
 	}
 }
 
-int sendMsg(const SOCKET sock, char* string)
+int sendMsg(const SOCKET sock, char* string, int index)
 {
 	char msg_buf[BUFSIZE];
 	memset(msg_buf, 9, BUFSIZE);
@@ -446,13 +453,19 @@ int sendMsg(const SOCKET sock, char* string)
 	{
 		if (*string == '%' && *(string + 1) == ' ')
 		{
+			buf[c] = '\0';
+			if (strlen(buf) > 0)
+			{
+				sprintf(msg_buf, SCRIPT_MESSAGE, mlist[index], buf);
+				send(sock, msg_buf, strlen(msg_buf), 0);
+			}
 			return 1;
 		}
 
 		if (*string == '\n')
 		{
 			buf[c] = '\0';
-			sprintf(msg_buf, SCRIPT_MESSAGE, mlist[0], buf);
+			sprintf(msg_buf, SCRIPT_MESSAGE, mlist[index], buf);
 			send(sock, msg_buf, strlen(msg_buf), 0);
 			memset(msg_buf, 0, BUFSIZE);
 			memset(buf, 0, BUFSIZE);
@@ -495,7 +508,7 @@ int sendMsg(const SOCKET sock, char* string)
 	}
 	if (strlen(buf) > 0)
 	{
-		sprintf(msg_buf, SCRIPT_MESSAGE, mlist[0], buf);
+		sprintf(msg_buf, SCRIPT_MESSAGE, mlist[index], buf);
 		send(sock, msg_buf, strlen(msg_buf), 0);
 	}
 	return 0;
