@@ -11,10 +11,25 @@ using namespace std;
 #define WM_SOCKET_NOTIFY (WM_USER + 1)
 
 #define WM_SOCKET_CLIENT (WM_USER + 2)
+#define FD_Connecting 0
+#define FD_Reading	  1
+#define FD_Writing    2
+
+#define HEAD "<html>\r\n<head>\r\n<meta http-equiv=\"Content-Type\" content=\"text/html; charset=big5\" />\r\n<title>Network Programming Homework 3</title>\r\n</head>\r\n"
+#define BODY "<body bgcolor=#336699>\r\n"
+#define FONT "<font face=\"Courier New\" size=2 color=#FFFF99>\r\n"
+#define TABLE1 "<table width=\"800\" border=\"1\">\r\n<tr>\r\n"
+#define TABLE_ELEMENT "<td>%s</td>\r\n"
+#define TABLE2 "</tr>\r\n<tr>\r\n<td valign=\"top\" id=\"m0\"></td><td valign=\"top\" id=\"m1\"></td><td valign=\"top\" id=\"m2\"></td>\r\n<td valign=\"top\" id=\"m3\"></td><td valign=\"top\" id=\"m4\"></td>\r\n</tr>\r\n</table>\r\n"
+#define SCRIPT_MESSAGE "<script>document.all[\'%s\'].innerHTML += \"%s<br>\";</script>\r\n"
+#define SCRIPT_COMMAND "<script>document.all[\'%s\'].innerHTML += \"% <b>%s</b><br>\";</script>\r\n"
+#define TAIL "</font>\r\n</body>\r\n</html>\r\n"
 
 BOOL CALLBACK MainDlgProc(HWND, UINT, WPARAM, LPARAM);
 int EditPrintf (HWND, TCHAR *, ...);
 void parseString(char* string, int* nbHost);
+int sendMsg(const SOCKET sock, char* string);
+int readline(FILE* fp, char *ptr, int maxlen);
 //=================================================================
 //	Global Variables
 //=================================================================
@@ -24,6 +39,15 @@ char* hosts[5];
 char* ports[5];
 char* files[5];
 FILE* filefps[5];
+int status = FD_Connecting;
+
+const char* mlist[5] = {
+	"m0",
+	"m1",
+	"m2",
+	"m3",
+	"m4"
+};
 
 struct {
 	char* ext;
@@ -74,8 +98,9 @@ BOOL CALLBACK MainDlgProc(HWND hwnd, UINT Message, WPARAM wParam, LPARAM lParam)
 
 	int err;
 
-	char recv_buf[4096];
-	char msg_buf[4096];
+	char recv_buf[BUFSIZE];
+	char msg_buf[BUFSIZE];
+	char command_buf[BUFSIZE];
 	FILE* fp;
 	int n;
 
@@ -247,6 +272,25 @@ BOOL CALLBACK MainDlgProc(HWND hwnd, UINT Message, WPARAM wParam, LPARAM lParam)
 							parseString(get, &nbHost);
 							EditPrintf(hwndEdit, TEXT("=== nbHost:%d ===\r\n"), nbHost);
 
+							send(ssock, HEAD, strlen(HEAD), 0);
+							send(ssock, BODY, strlen(BODY), 0);
+							send(ssock, FONT, strlen(FONT), 0);
+							send(ssock, TABLE1, strlen(TABLE1), 0);
+							for (int i = 0; i < nbHost; i++)
+							{
+								sprintf(msg_buf, TABLE_ELEMENT, hosts[i]);
+								send(ssock, msg_buf, strlen(msg_buf), 0);
+							}
+							send(ssock, TABLE2, strlen(TABLE2), 0);
+							send(ssock, TAIL, strlen(TAIL), 0);
+
+							//open batch file
+							for (int i = 0; i < nbHost; i++)
+							{
+								filefps[i] = fopen(files[i], "r");
+								EditPrintf(hwndEdit, TEXT("=== open batch file ===\r\n"));
+							}
+
 							WSAStartup(MAKEWORD(2, 0), &wsaCData);
 
 							//create client socket
@@ -273,8 +317,7 @@ BOOL CALLBACK MainDlgProc(HWND hwnd, UINT Message, WPARAM wParam, LPARAM lParam)
 							ca.sin_addr.s_addr = inet_addr(hosts[0]);
 
 							connect(csock, (LPSOCKADDR)&ca, sizeof(ca));
-
-							//closesocket(ssock);
+							status = FD_Reading;			
 							break;
 						case NONE:
 							EditPrintf(hwndEdit, TEXT("=== FileType NONE ===\r\n"));
@@ -291,17 +334,48 @@ BOOL CALLBACK MainDlgProc(HWND hwnd, UINT Message, WPARAM wParam, LPARAM lParam)
 					break;
 			};
 			break;
+		//deal with connecting ras/rwg event
 		case WM_SOCKET_CLIENT:
 			switch (WSAGETSELECTEVENT(lParam))
 			{
 				case FD_READ:
-					n = recv(csock, recv_buf, BUFSIZE - 1, 0);
-					send(ssock, recv_buf, n, 0);
-					closesocket(ssock);
-					EditPrintf(hwndEdit, TEXT("=== CLIENT FD_READ ===\r\n"));
+					EditPrintf(hwndEdit, TEXT("=== CLIENT FD_READ %d ===\r\n"), status);
+					if (status == FD_Reading)
+					{
+						n = recv(csock, recv_buf, BUFSIZE - 1, 0);
+						recv_buf[n - 1] = '\0';
+						if (n > 0)
+						{
+							EditPrintf(hwndEdit, TEXT("=== receive from server: %s n: %d ===\r\n"), recv_buf, n);
+							if (sendMsg(ssock, recv_buf))
+							{
+								len = readline(filefps[0], command_buf, sizeof(command_buf));
+								command_buf[len - 1] = 13;
+								command_buf[len] = 10;
+								command_buf[len + 1] = '\0';
+								n = send(csock, command_buf, len + 1, 0);
+								if (n > 0)
+								{
+									command_buf[len - 1] = '\0';
+									sprintf(msg_buf, SCRIPT_COMMAND, mlist[0], command_buf);
+									send(ssock, msg_buf, strlen(msg_buf), 0);
+								}
+								//status = FD_Writing;
+							}
+						}
+					
+					}
 					break;
 				case FD_WRITE:
 					EditPrintf(hwndEdit, TEXT("=== CLIENT FD_WRITE ===\r\n"));
+					if (status == FD_Writing)
+					{
+						
+						if (n > 0)
+						{
+							status = FD_Reading;
+						}
+					}
 					break;
 				case FD_CLOSE:
 					EditPrintf(hwndEdit, TEXT("=== CLIENT FD_CLOSE ===\r\n"));
@@ -357,4 +431,66 @@ void parseString(char* string, int* nbHost)
 		++count;
 		pair = strtok(NULL, "&");
 	}
+}
+
+int sendMsg(const SOCKET sock, char* string)
+{
+	char msg_buf[BUFSIZE];
+	memset(msg_buf, 9, BUFSIZE);
+	char buf[BUFSIZE];
+	memset(buf, 0, BUFSIZE);
+	int c = 0;
+	while (*string != '\0')
+	{
+		if (*string == '%' && *(string + 1) == ' ')
+		{
+			return 1;
+		}
+
+		if (*string == '\n')
+		{
+			buf[c] = '\0';
+			sprintf(msg_buf, SCRIPT_MESSAGE, mlist[0], buf);
+			send(sock, msg_buf, strlen(msg_buf), 0);
+			memset(msg_buf, 0, BUFSIZE);
+			c = 0;
+			++string;
+			continue;
+		}
+		else
+		{
+			buf[c] = *string;
+		}
+		++c;
+		++string;
+	}
+	if (strlen(buf) > 0)
+	{
+		sprintf(msg_buf, SCRIPT_MESSAGE, mlist[0], buf);
+		send(sock, msg_buf, strlen(msg_buf), 0);
+	}
+	return 0;
+}
+
+int readline(FILE* fp, char *ptr, int maxlen)
+{
+	int n, rc;
+	char c;
+	*ptr = 0;
+	for (n = 1; n < maxlen; n++)
+	{
+		rc = fread(&c, sizeof(char), 1, fp);
+		if (rc == 1)
+		{
+			*ptr++ = c;
+			if (c == '\n')  break;
+		}
+		else if (rc == 0)
+		{
+			if (n == 1)     return 0;
+			else         break;
+		}
+		else return (-1);
+	}
+	return n;
 }
