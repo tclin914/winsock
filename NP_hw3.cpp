@@ -10,6 +10,8 @@ using namespace std;
 
 #define WM_SOCKET_NOTIFY (WM_USER + 1)
 
+#define WM_SOCKET_CLIENT (WM_USER + 2)
+
 BOOL CALLBACK MainDlgProc(HWND, UINT, WPARAM, LPARAM);
 int EditPrintf (HWND, TCHAR *, ...);
 void parseString(char* string, int* nbHost);
@@ -79,11 +81,14 @@ BOOL CALLBACK MainDlgProc(HWND hwnd, UINT Message, WPARAM wParam, LPARAM lParam)
 
 	FileType filetype = NONE;
 	char* filename = NULL;
-	string s_filename = "form_get.html";
 	char* get;
 	int fnlen;
 	int len;
 	int nbHost = 0;
+
+	WSADATA wsaCData;
+	static SOCKET csock;
+	static struct sockaddr_in ca;
 
 	switch(Message) 
 	{
@@ -221,43 +226,87 @@ BOOL CALLBACK MainDlgProc(HWND hwnd, UINT Message, WPARAM wParam, LPARAM lParam)
 
 					switch (filetype)
 					{
-					case GIF:
-					case JPG:
-					case PNG:
-					case ZIP:
-					case GZ:
-					case TAR:
-					case HTM:
-					case HTML:
-						fp = fopen(filename, "r");
-						while ((n = fread(msg_buf, sizeof(char), BUFSIZE, fp)) > 0) {
-							send(ssock, msg_buf, n, 0);
-						}
-						closesocket(ssock);
-						break;
-					case EXE:
-						break;
-					case CGI:
-						EditPrintf(hwndEdit, TEXT("=== get:%s ===\r\n"), get);
-						parseString(get, &nbHost);
-						EditPrintf(hwndEdit, TEXT("=== nbHost:%d ===\r\n"), nbHost);
-						closesocket(ssock);
-						break;
-					case NONE:
-						EditPrintf(hwndEdit, TEXT("=== FileType NONE ===\r\n"));
-						break;
-					default:
-						break;
+						case GIF:
+						case JPG:
+						case PNG:
+						case ZIP:
+						case GZ:
+						case TAR:
+						case HTM:
+						case HTML:
+							fp = fopen(filename, "r");
+							while ((n = fread(msg_buf, sizeof(char), BUFSIZE, fp)) > 0) {
+								send(ssock, msg_buf, n, 0);
+							}
+							closesocket(ssock);
+							break;
+						case EXE:
+							break;
+						case CGI:
+							EditPrintf(hwndEdit, TEXT("=== get:%s ===\r\n"), get);
+							parseString(get, &nbHost);
+							EditPrintf(hwndEdit, TEXT("=== nbHost:%d ===\r\n"), nbHost);
+
+							WSAStartup(MAKEWORD(2, 0), &wsaCData);
+
+							//create client socket
+							csock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+
+							if (msock == INVALID_SOCKET) {
+								EditPrintf(hwndEdit, TEXT("=== Error: create socket error ===\r\n"));
+								WSACleanup();
+								return TRUE;
+							}
+
+							err = WSAAsyncSelect(csock, hwnd, WM_SOCKET_CLIENT, FD_CLOSE | FD_READ | FD_WRITE);
+
+							if (err == SOCKET_ERROR) {
+								EditPrintf(hwndEdit, TEXT("=== Error: select error ===\r\n"));
+								closesocket(msock);
+								WSACleanup();
+								return TRUE;
+							}
+
+							//fill the address info about server
+							ca.sin_family = AF_INET;
+							ca.sin_port = htons(atoi(ports[0]));
+							ca.sin_addr.s_addr = inet_addr(hosts[0]);
+
+							connect(csock, (LPSOCKADDR)&ca, sizeof(ca));
+
+							//closesocket(ssock);
+							break;
+						case NONE:
+							EditPrintf(hwndEdit, TEXT("=== FileType NONE ===\r\n"));
+							break;
+						default:
+							break;
 					}
 					break;
 				case FD_WRITE:
 				//Write your code for write event here
+					EditPrintf(hwndEdit, TEXT("=== FD_WRITE ===\r\n"));
 					break;
 				case FD_CLOSE:
 					break;
 			};
 			break;
-		
+		case WM_SOCKET_CLIENT:
+			switch (WSAGETSELECTEVENT(lParam))
+			{
+				case FD_READ:
+					n = recv(csock, recv_buf, BUFSIZE - 1, 0);
+					send(ssock, recv_buf, n, 0);
+					closesocket(ssock);
+					EditPrintf(hwndEdit, TEXT("=== CLIENT FD_READ ===\r\n"));
+					break;
+				case FD_WRITE:
+					EditPrintf(hwndEdit, TEXT("=== CLIENT FD_WRITE ===\r\n"));
+					break;
+				case FD_CLOSE:
+					EditPrintf(hwndEdit, TEXT("=== CLIENT FD_CLOSE ===\r\n"));
+					break;
+			}
 		default:
 			return FALSE;
 
